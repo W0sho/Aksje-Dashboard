@@ -19,7 +19,7 @@ TOPP_30_AKSJER = {
     "NFLX": "Netflix", "KO": "Coca-Cola"
 }
 
-# Ordbok for fundamentale nøkkeltall (Yfinance-nøkkel : Visningsnavn)
+# Ordbok for fundamentale nøkkeltall
 FUNDAMENTALE_METRIKKER = {
     "trailingPE": "P/E (Trailing)",
     "forwardPE": "P/E (Forward)",
@@ -30,11 +30,22 @@ FUNDAMENTALE_METRIKKER = {
     "marketCap": "Markedsverdi (Market Cap)"
 }
 
+# --- CACHING FUNKSJONER (Løser "Too Many Requests") ---
+# ttl=900 betyr at dataene lagres i 15 minutter før de hentes på nytt
+
+@st.cache_data(ttl=900)
+def hent_historisk_data(tickers, period):
+    return yf.download(tickers, period=period, group_by='ticker')
+
+@st.cache_data(ttl=900)
+def hent_ticker_info(ticker):
+    return yf.Ticker(ticker).info
+
+
 # --- SIDEBAR: INNSTILLINGER ---
 st.sidebar.header("1. Velg Periode")
 period = st.sidebar.selectbox("Tidsperiode for graf:", ["1mo", "3mo", "6mo", "1y", "2y", "5y"], index=3)
 
-# Gitter for aksjevalg
 st.sidebar.header("2. Velg Aksjer")
 with st.sidebar.expander("Åpne aksjeliste", expanded=True):
     valgte_tickers = []
@@ -50,11 +61,9 @@ with st.sidebar.expander("Åpne aksjeliste", expanded=True):
                 if st.checkbox(f"{ticker}", value=default_valg, key=f"tk_{ticker}"):
                     valgte_tickers.append(ticker)
 
-# Gitter for fundamentale nøkkeltall
 st.sidebar.header("3. Fundamentale Nøkkeltall")
 with st.sidebar.expander("Velg nøkkeltall for tabell", expanded=True):
     valgte_metrikker = []
-    # Setter P/E og Market Cap som standard
     for kilde_navn, visnings_navn in FUNDAMENTALE_METRIKKER.items():
         default_metrikk = True if kilde_navn in ["trailingPE", "marketCap"] else False
         if st.checkbox(visnings_navn, value=default_metrikk, key=f"met_{kilde_navn}"):
@@ -64,8 +73,8 @@ with st.sidebar.expander("Velg nøkkeltall for tabell", expanded=True):
 # --- HOVEDSKJERM: DATABEHANDLING OG VISNING ---
 if valgte_tickers:
     try:
-        # 1. Hent og vis historisk kursevolusjon (Graf)
-        data = yf.download(valgte_tickers, period=period, group_by='ticker')
+        # Bruker den cachede funksjonen i stedet for yf.download direkte
+        data = hent_historisk_data(valgte_tickers, period)
         
         fig = go.Figure()
         if len(valgte_tickers) == 1:
@@ -81,24 +90,22 @@ if valgte_tickers:
         fig.update_layout(title="Kursutvikling", yaxis_title="Pris (USD)", template="plotly_dark", hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
-        
-        # 2. Hent fundamentale nøkkeltall via yf.Ticker (Tabell)
         st.subheader("📊 Fundamental Sammenligning")
         
-        with st.spinner("Henter fundamentale nøkkeltall fra API..."):
+        with st.spinner("Henter fundamentale nøkkeltall..."):
             tabell_data = []
             
             for t in valgte_tickers:
-                ticker_info = yf.Ticker(t).info
+                # Bruker den cachede funksjonen her også!
+                ticker_info = hent_ticker_info(t)
                 rad = {"Selskap": TOPP_30_AKSJER.get(t, t), "Ticker": t}
                 
                 for metrikk in valgte_metrikker:
                     verdi = ticker_info.get(metrikk, None)
                     
-                    # VIKTIG: Vi lagrer råtallet (milliarder for market cap) uten å gjøre det om til tekst
                     if verdi is not None:
                         if metrikk == "marketCap":
-                            rad[FUNDAMENTALE_METRIKKER[metrikk]] = verdi / 1e9  # Lagre som tall i milliarder
+                            rad[FUNDAMENTALE_METRIKKER[metrikk]] = verdi / 1e9
                         else:
                             rad[FUNDAMENTALE_METRIKKER[metrikk]] = verdi
                     else:
@@ -106,11 +113,8 @@ if valgte_tickers:
                         
                 tabell_data.append(rad)
             
-            # Lag dataframe
             df_fundamental = pd.DataFrame(tabell_data).set_index("Selskap")
             
-            # 3. VIKTIG: Vi bruker Streamlit sin innebygde .style for å vise tallene pent, 
-            # uten å ødelegge for sorteringen!
             st.dataframe(
                 df_fundamental.style.format({
                     "P/E (Trailing)": "{:.2f}",
